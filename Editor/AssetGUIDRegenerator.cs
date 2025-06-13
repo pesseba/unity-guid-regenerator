@@ -44,7 +44,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace Jads.Tools
 {
@@ -122,6 +124,13 @@ namespace Jads.Tools
         // Set to "Assets/" folder only. We don't want to include other directories of the root folder
         private static readonly string[] SearchDirectories = { "Assets" };
 
+        public class RemapTerrainData
+        {
+            public Dictionary<int, string> layersPath = new Dictionary<int, string>();
+            public Dictionary<int, string> treesPath = new Dictionary<int, string>();
+            public Dictionary<int, string> detailPath = new Dictionary<int, string>();
+        }
+
         public static void RegenerateGUIDs(string[] selectedGUIDs)
         {
             var assetGUIDs = AssetDatabase.FindAssets(SearchFilter, SearchDirectories);
@@ -130,6 +139,8 @@ namespace Jads.Tools
             var skippedAssets = new List<string>();
 
             var inverseReferenceMap = new Dictionary<string, HashSet<string>>();
+
+            var remapTerrains = new Dictionary<string, RemapTerrainData>(); //terrain path , remap info
 
             /*
             * PREPARATION PART 1 - Initialize map to store all paths that have a reference to our selectedGUIDs
@@ -153,17 +164,17 @@ namespace Jads.Tools
                 var dependencies = AssetDatabase.GetDependencies(path);
                 foreach (var dependency in dependencies)
                 {
-                    EditorUtility.DisplayProgressBar($"Scanning guid references on:", path, (float) scanProgress / assetGUIDs.Length);
+                    EditorUtility.DisplayProgressBar($"Scanning guid references on:", path, (float)scanProgress / assetGUIDs.Length);
 
                     var dependencyGUID = AssetDatabase.AssetPathToGUID(dependency);
                     if (inverseReferenceMap.ContainsKey(dependencyGUID))
                     {
                         inverseReferenceMap[dependencyGUID].Add(path);
-                        
+
                         // Also include .meta path. This fixes broken references when an FBX uses external materials
                         var metaPath = AssetDatabase.GetTextMetaFilePathFromAssetPath(path);
                         inverseReferenceMap[dependencyGUID].Add(metaPath);
-                        
+
                         referencesCount++;
                     }
                 }
@@ -173,6 +184,7 @@ namespace Jads.Tools
 
             foreach (var selectedGUID in selectedGUIDs)
             {
+
                 var newGUID = GUID.Generate().ToString();
                 try
                 {
@@ -234,15 +246,24 @@ namespace Jads.Tools
                      */
                     var countReplaced = 0;
                     var referencePaths = inverseReferenceMap[selectedGUID];
-                    foreach(var referencePath in referencePaths)
+                    foreach (var referencePath in referencePaths)
                     {
                         countProgress++;
 
-                        EditorUtility.DisplayProgressBar($"Regenerating GUID: {assetPath}", referencePath, (float) countProgress / referencesCount);
+                        EditorUtility.DisplayProgressBar($"Regenerating GUID: {assetPath}", referencePath, (float)countProgress / referencesCount);
 
                         if (IsDirectory(referencePath)) continue;
 
                         var contents = File.ReadAllText(referencePath);
+
+                        if (referencePath.EndsWith(".asset"))
+                        {
+                            TerrainData terrainData = AssetDatabase.LoadAssetAtPath<TerrainData>(referencePath);
+                            if (terrainData)
+                            {
+                                RegisterTerrain(terrainData, referencePath, assetPath, ref remapTerrains);
+                            }
+                        }
 
                         if (!contents.Contains(selectedGUID)) continue;
 
@@ -264,18 +285,52 @@ namespace Jads.Tools
                 }
             }
 
-            if (EditorUtility.DisplayDialog("Regenerate GUID",
-                $"Regenerated GUID for {updatedAssets.Count} assets. \nSee console logs for detailed report.", "Done"))
+            /*
+            * PART 3 - Save all assets YAML to update guids
+            */
+            //Save assets here to remap terrain assets work
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
+            /*
+            * PART 4 - Update the references in binary assets 1 frame after to wait AssetDataBase be ready
+            */
+            EditorApplication.delayCall += UpdateRefs;
+            void UpdateRefs()
             {
-                var message = $"<b>GUID Regenerator {AssetGUIDRegeneratorMenu.Version}</b>\n";
+                EditorApplication.delayCall -= UpdateRefs;
+                try
+                {
+                    RefreshTerrains(remapTerrains);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                }
+                AssetDatabase.SaveAssets();
+                AssetDatabase.Refresh();
+                GC.Collect();
 
-                if (updatedAssets.Count > 0) message += $"<b><color=green>{updatedAssets.Count} Updated Asset/s</color></b>\tSelect this log for more info\n";
-                message = updatedAssets.Aggregate(message, (current, kvp) => current + $"{kvp.Value} references\t{kvp.Key}\n");
+                EditorApplication.delayCall += ShowEndDialog;
+            }
 
-                if (skippedAssets.Count > 0) message += $"\n<b><color=red>{skippedAssets.Count} Skipped Asset/s</color></b>\n";
-                message = skippedAssets.Aggregate(message, (current, skipped) => current + $"{skipped}\n");
+            void ShowEndDialog()
+            {
+                EditorApplication.delayCall -= ShowEndDialog;
 
-                Debug.Log($"{message}");
+                if (EditorUtility.DisplayDialog("Regenerate GUID",
+                    $"Regenerated GUID for {updatedAssets.Count} assets. \nSee console logs for detailed report.", "Done"))
+                {
+                    var message = $"<b>GUID Regenerator {AssetGUIDRegeneratorMenu.Version}</b>\n";
+
+                    if (updatedAssets.Count > 0) message += $"<b><color=green>{updatedAssets.Count} Updated Asset/s</color></b>\tSelect this log for more info\n";
+                    message = updatedAssets.Aggregate(message, (current, kvp) => current + $"{kvp.Value} references\t{kvp.Key}\n");
+
+                    if (skippedAssets.Count > 0) message += $"\n<b><color=red>{skippedAssets.Count} Skipped Asset/s</color></b>\n";
+                    message = skippedAssets.Aggregate(message, (current, skipped) => current + $"{skipped}\n");
+
+                    Debug.Log($"{message}");
+                }
             }
         }
 
@@ -288,7 +343,7 @@ namespace Jads.Tools
                 var assetPath = AssetDatabase.GUIDToAssetPath(guid);
                 if (IsDirectory(assetPath))
                 {
-                    string[] searchDirectory = {assetPath};
+                    string[] searchDirectory = { assetPath };
 
                     if (includeFolders) finalGuids.Add(guid);
                     finalGuids.AddRange(AssetDatabase.FindAssets(SearchFilter, searchDirectory));
@@ -315,6 +370,115 @@ namespace Jads.Tools
         }
 
         public static bool IsDirectory(string path) => File.GetAttributes(path).HasFlag(FileAttributes.Directory);
+
+        static void RegisterTerrain(TerrainData terrainData, string terrainPath, string assetPath, ref Dictionary<string, RemapTerrainData> remapTerrains)
+        {
+            string assetName = Path.GetFileNameWithoutExtension(assetPath);
+            int index = -1;
+
+            index = terrainData.terrainLayers.ToList().FindIndex(x => x.name == assetName);
+            if (index >= 0)
+            {
+                if (!remapTerrains.ContainsKey(terrainPath)) remapTerrains.Add(terrainPath, new RemapTerrainData());
+                remapTerrains[terrainPath].layersPath.Add(index, assetPath);
+                return;
+            }
+
+            index = terrainData.treePrototypes.ToList().FindIndex(x => x.prefab != null && x.prefab.name == assetName);
+            if (index >= 0)
+            {
+                if (!remapTerrains.ContainsKey(terrainPath)) remapTerrains.Add(terrainPath, new RemapTerrainData());
+                remapTerrains[terrainPath].treesPath.Add(index, assetPath);
+            }
+
+            index = terrainData.detailPrototypes.ToList().FindIndex(x => x.prototypeTexture != null && x.prototypeTexture.name == assetName);
+            index = index >= 0 ? index : terrainData.detailPrototypes.ToList().FindIndex(x => x.prototype != null && x.prototype.name == assetName);
+
+            if (index >= 0)
+            {
+                if (!remapTerrains.ContainsKey(terrainPath)) remapTerrains.Add(terrainPath, new RemapTerrainData());
+                remapTerrains[terrainPath].detailPath.Add(index, assetPath);
+            }
+        }
+
+        static void RefreshTerrains(Dictionary<string, RemapTerrainData> remapTerrains)
+        {
+            foreach (var remapTerrain in remapTerrains)
+            {
+                TerrainData terrainData = AssetDatabase.LoadAssetAtPath<TerrainData>(remapTerrain.Key);
+
+                TerrainLayer[] terrainLayers = terrainData.terrainLayers;
+                foreach (var layerMap in remapTerrain.Value.layersPath)
+                {
+                    terrainLayers[layerMap.Key] = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerMap.Value); ;
+                }
+                terrainData.terrainLayers = terrainLayers;
+
+                TreePrototype[] terrainTrees = terrainData.treePrototypes;
+                foreach (var tree in remapTerrain.Value.treesPath)
+                {
+                    terrainTrees[tree.Key].prefab = AssetDatabase.LoadAssetAtPath<GameObject>(tree.Value);
+                }
+                terrainData.treePrototypes = terrainTrees;
+
+                DetailPrototype[] terrainDetails = terrainData.detailPrototypes;
+                foreach (var detail in remapTerrain.Value.detailPath)
+                {
+                    if (terrainDetails[detail.Key].usePrototypeMesh)
+                    {
+                        terrainDetails[detail.Key].prototype = AssetDatabase.LoadAssetAtPath<GameObject>(detail.Value);
+                    }
+                    else
+                    {
+                        terrainDetails[detail.Key].prototypeTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(detail.Value);
+                    }
+                }
+                terrainData.detailPrototypes = terrainDetails;
+            }
+        }
+
+        //TODO => maybe use this to regenerate AnimatorController in future
+        /* 
+        static void UpdateAssetDataReferences(UnityEngine.Object assetData, Dictionary<string, string> guidMap)
+        {
+            var so = new SerializedObject(assetData);
+            var iterator = so.GetIterator();
+
+            bool changed = false;
+
+            while (iterator.NextVisible(true))
+            {
+                if (iterator.propertyType == SerializedPropertyType.ObjectReference)
+                {
+                    var obj = iterator.objectReferenceValue;
+                    if (obj == null) continue;
+
+                    string oldPath = AssetDatabase.GetAssetPath(obj);
+                    string oldGuid = AssetDatabase.AssetPathToGUID(oldPath);
+
+                    if (guidMap.TryGetValue(oldGuid, out string newGuid))
+                    {
+                        string newPath = AssetDatabase.GUIDToAssetPath(newGuid);
+                        var newObj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(newPath);
+
+                        if (newObj != null)
+                        {
+                            iterator.objectReferenceValue = newObj;
+                            changed = true;
+                            // Debug.Log($"Atualizado {iterator.displayName}: {oldGuid} → {newGuid}");
+                        }
+                    }
+                }
+            }
+
+            if (changed)
+            {
+                so.ApplyModifiedProperties();
+                EditorUtility.SetDirty(assetData);
+            }
+        }
+        // */
+
     }
 }
 
