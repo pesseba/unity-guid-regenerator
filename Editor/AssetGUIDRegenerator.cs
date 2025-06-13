@@ -373,10 +373,9 @@ namespace Jads.Tools
 
         static void RegisterTerrain(TerrainData terrainData, string terrainPath, string assetPath, ref Dictionary<string, RemapTerrainData> remapTerrains)
         {
-            string assetName = Path.GetFileNameWithoutExtension(assetPath);
             int index = -1;
 
-            index = terrainData.terrainLayers.ToList().FindIndex(x => x.name == assetName);
+            index = terrainData.terrainLayers.ToList().FindIndex(x => AssetDatabase.GetAssetPath(x) == assetPath);
             if (index >= 0)
             {
                 if (!remapTerrains.ContainsKey(terrainPath)) remapTerrains.Add(terrainPath, new RemapTerrainData());
@@ -384,15 +383,15 @@ namespace Jads.Tools
                 return;
             }
 
-            index = terrainData.treePrototypes.ToList().FindIndex(x => x.prefab != null && x.prefab.name == assetName);
+            index = terrainData.treePrototypes.ToList().FindIndex(x => x.prefab != null && AssetDatabase.GetAssetPath(x.prefab) == assetPath);
             if (index >= 0)
             {
                 if (!remapTerrains.ContainsKey(terrainPath)) remapTerrains.Add(terrainPath, new RemapTerrainData());
                 remapTerrains[terrainPath].treesPath.Add(index, assetPath);
             }
 
-            index = terrainData.detailPrototypes.ToList().FindIndex(x => x.prototypeTexture != null && x.prototypeTexture.name == assetName);
-            index = index >= 0 ? index : terrainData.detailPrototypes.ToList().FindIndex(x => x.prototype != null && x.prototype.name == assetName);
+            index = terrainData.detailPrototypes.ToList().FindIndex(x => x.prototypeTexture != null && AssetDatabase.GetAssetPath(x.prototypeTexture) == assetPath);
+            index = index >= 0 ? index : terrainData.detailPrototypes.ToList().FindIndex(x => x.prototype != null && AssetDatabase.GetAssetPath(x.prototype) == assetPath);
 
             if (index >= 0)
             {
@@ -410,7 +409,7 @@ namespace Jads.Tools
                 TerrainLayer[] terrainLayers = terrainData.terrainLayers;
                 foreach (var layerMap in remapTerrain.Value.layersPath)
                 {
-                    terrainLayers[layerMap.Key] = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerMap.Value); ;
+                    terrainLayers[layerMap.Key] = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerMap.Value);
                 }
                 terrainData.terrainLayers = terrainLayers;
 
