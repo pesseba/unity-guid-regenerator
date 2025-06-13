@@ -1,3 +1,7 @@
+### 1.0.6 (2025.06.13)
+
+- **New**: Added TerrainData support when regenerate guids including: terrainlayers, trees and details
+
 ### 1.0.5 (2023.01.31)
 - **Fix**: Broken material references on an FBX asset when using legacy/remapped materials
 
